@@ -103,11 +103,26 @@ pub fn main() !void {
         return error.ListsOutOfSync;
     }
 
-    var totalDistance = @as(usize, 0);
-    for (leftArr, 0..) |leftValue, index| {
-        const rightValue = rightArr[index];
-        const distance: usize = @abs(leftValue - rightValue);
-        totalDistance = totalDistance + distance;
+    var lastValue = @as(isize, 0);
+    var lastSimilarity = @as(isize, 0);
+
+    var similarity = @as(isize, 0);
+    for (leftArr) |leftValue| {
+        if (leftValue == lastValue) {
+            similarity += lastSimilarity;
+            continue;
+        }
+
+        var count = @as(isize, 0);
+        for (rightArr) |rightValue| {
+            if (leftValue == rightValue) {
+                count += 1;
+            }
+        }
+
+        lastSimilarity = leftValue * count;
+        lastValue = leftValue;
+        similarity += lastSimilarity;
     }
 
     // stdout is for the actual output of your application, for example if you
@@ -117,7 +132,7 @@ pub fn main() !void {
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout = bw.writer();
 
-    try stdout.print("Total distance = {d}.\n", .{totalDistance});
+    try stdout.print("Total distance = {d}.\n", .{similarity});
     try stdout.print("Run `zig build test` to run the tests.\n", .{});
 
     try bw.flush(); // don't forget to flush!
