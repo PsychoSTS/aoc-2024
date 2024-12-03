@@ -6,13 +6,12 @@ const eql = std.mem.eql;
 const ArrayList = std.ArrayList;
 const test_allocator = std.testing.allocator;
 
+const LINE_FEED = 10;
 const SPACE = 32;
 const ASCII_NUMBER_OFFSET = 48;
 
 const FileOpenError = error{
     ListsOutOfSync,
-    AccessDenied,
-    OutOfMemory,
     FileNotFound,
 };
 
@@ -28,6 +27,37 @@ pub fn read_data_file() !zul.fs.LineIterator {
     return it;
 }
 
+fn is_numeric_char(char: u8) bool {
+    return char >= ASCII_NUMBER_OFFSET and char <= 57;
+}
+
+pub fn parse_line(line: []const u8, allocator: std.mem.Allocator) ![]isize {
+    var numbers = ArrayList(isize).init(allocator);
+    defer numbers.deinit();
+
+    var iter = std.mem.splitScalar(u8, line, ' ');
+    while (iter.next()) |substring| {
+        if (substring.len == 0) continue; // Skip empty parts
+
+        const value = try std.fmt.parseInt(isize, substring, 10);
+        try numbers.append(value);
+    }
+
+    return try numbers.toOwnedSlice();
+}
+
+pub fn parse_data(line_it: *zul.fs.LineIterator, allocator: std.mem.Allocator) ![][]isize {
+    var reportList = ArrayList([]isize).init(allocator);
+    defer reportList.deinit();
+
+    while (try line_it.next()) |line| {
+        const numbers = try parse_line(line, allocator);
+        try reportList.append(numbers);
+    }
+
+    return try reportList.toOwnedSlice();
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -37,92 +67,61 @@ pub fn main() !void {
         if (deinit_status == .leak) std.testing.expect(false) catch @panic("TEST FAIL");
     }
 
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
     var line_it = try read_data_file();
     defer line_it.deinit();
 
-    var leftList = ArrayList(isize).init(allocator);
-    var rightList = ArrayList(isize).init(allocator);
+    const reportList = try parse_data(&line_it, allocator);
     defer {
-        leftList.deinit();
-        rightList.deinit();
-    }
-
-    std.debug.print("Reading data...\n", .{});
-    while (try line_it.next()) |line| {
-        // std.debug.print("{s}\n", .{line});
-
-        var left = true;
-        var leftValue: isize = 0;
-        var rightValue: isize = 0;
-
-        for (line) |char| {
-            if (char == SPACE) {
-                left = false;
-                continue;
-            } else if (char < ASCII_NUMBER_OFFSET or char > 57) {
-                continue;
-            }
-
-            const value = char - ASCII_NUMBER_OFFSET;
-
-            if (left) {
-                leftValue *= 10;
-                leftValue = leftValue + @as(isize, value);
-            } else {
-                rightValue *= 10;
-                rightValue = rightValue + @as(isize, value);
-            }
+        // Free each inner array
+        for (reportList) |report| {
+            allocator.free(report);
         }
-
-        try leftList.append(leftValue);
-        try rightList.append(rightValue);
-        // std.debug.print("L: {d}\tR: {d}\n", .{ leftValue, rightValue });
+        // Free the outer array
+        allocator.free(reportList);
     }
 
-    // std.debug.print("\n", .{});
+    var safeReportCount: usize = 0;
 
-    const leftArr = leftList.items;
-    const rightArr = rightList.items;
+    reportListLoop: for (reportList) |report| {
+        var previous: isize = -1;
+        var isIncreasing: ?bool = null;
 
-    std.mem.sort(isize, leftArr, {}, comptime std.sort.asc(isize));
-    std.mem.sort(isize, rightArr, {}, comptime std.sort.asc(isize));
-
-    // for (leftArr) |value| {
-    //     std.debug.print("{d} ", .{value});
-    // }
-
-    // std.debug.print("\n", .{});
-    // for (rightArr) |value| {
-    //     std.debug.print("{d} ", .{value});
-    // }
-
-    if (leftArr.len != rightArr.len) {
-        return error.ListsOutOfSync;
-    }
-
-    var lastValue = @as(isize, 0);
-    var lastSimilarity = @as(isize, 0);
-
-    var similarity = @as(isize, 0);
-    for (leftArr) |leftValue| {
-        if (leftValue == lastValue) {
-            similarity += lastSimilarity;
+        // Make sure we had enough numbers to determine a pattern
+        if (report.len < 2) {
             continue;
         }
 
-        var count = @as(isize, 0);
-        for (rightArr) |rightValue| {
-            if (leftValue == rightValue) {
-                count += 1;
+        for (report) |value| {
+            if (previous == -1) {
+                previous = value;
+                continue;
             }
+
+            std.debug.print(" ({d} {d}) ", .{ previous, value });
+
+            if (previous == value) {
+                continue :reportListLoop;
+            }
+
+            const diff: usize = @abs(previous - value);
+            std.debug.print(" = {d}\n ", .{diff});
+            if (diff > 3) {
+                continue :reportListLoop;
+            }
+
+            // Check increasing/decreasing pattern
+            if (isIncreasing == null) {
+                isIncreasing = value > previous;
+            } else if (isIncreasing.? and value < previous) {
+                continue :reportListLoop;
+            } else if (!isIncreasing.? and value > previous) {
+                continue :reportListLoop;
+            }
+
+            previous = value;
         }
 
-        lastSimilarity = leftValue * count;
-        lastValue = leftValue;
-        similarity += lastSimilarity;
+        safeReportCount += 1;
     }
 
     // stdout is for the actual output of your application, for example if you
@@ -132,7 +131,7 @@ pub fn main() !void {
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout = bw.writer();
 
-    try stdout.print("Total distance = {d}.\n", .{similarity});
+    try stdout.print("\nAnswer = {d}.\n", .{safeReportCount});
     try stdout.print("Run `zig build test` to run the tests.\n", .{});
 
     try bw.flush(); // don't forget to flush!
