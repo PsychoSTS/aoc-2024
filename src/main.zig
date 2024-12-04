@@ -1,5 +1,6 @@
 const std = @import("std");
 const zul = @import("zul");
+const root = @import("root");
 
 const fs = std.fs;
 const eql = std.mem.eql;
@@ -14,6 +15,19 @@ const FileOpenError = error{
     ListsOutOfSync,
     FileNotFound,
 };
+
+pub fn splice_array(slice: []const isize, skip_index: usize, allocator: std.mem.Allocator) ![]isize {
+    // Create a new array with length - 1
+    var result = try allocator.alloc(isize, slice.len - 1);
+
+    // Copy first part
+    @memcpy(result[0..skip_index], slice[0..skip_index]);
+
+    // Copy second part
+    @memcpy(result[skip_index..], slice[skip_index + 1 ..]);
+
+    return result;
+}
 
 pub fn read_data_file() !zul.fs.LineIterator {
     // create a buffer large enough to hold the longest valid line
@@ -58,6 +72,55 @@ pub fn parse_data(line_it: *zul.fs.LineIterator, allocator: std.mem.Allocator) !
     return try reportList.toOwnedSlice();
 }
 
+pub fn check_sequence(report: []const isize) bool {
+    if (report.len < 2) return false;
+
+    const isIncreasing = report[0] < report[1];
+
+    var last_value: ?isize = null;
+
+    for (report) |value| {
+        if (last_value == null) {
+            last_value = value;
+            continue;
+        }
+
+        if (last_value == value) {
+            return false;
+        }
+
+        // Check difference
+        const diff = @abs(last_value.? - value);
+        if (diff > 3) return false;
+
+        // Check pattern
+        if (isIncreasing and value <= last_value.?) {
+            return false;
+        } else if (!isIncreasing and value >= last_value.?) {
+            return false;
+        }
+
+        last_value = value;
+    }
+
+    return true;
+}
+
+pub fn is_report_safe(report: []const isize, allocator: std.mem.Allocator) !bool {
+    // First try without skipping any number
+    if (check_sequence(report)) return true;
+
+    // Try skipping each number
+    for (0..report.len) |skip_index| {
+        const tmp = try splice_array(report, skip_index, allocator);
+        defer allocator.free(tmp);
+
+        if (check_sequence(tmp)) return true;
+    }
+
+    return false;
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -82,46 +145,10 @@ pub fn main() !void {
 
     var safeReportCount: usize = 0;
 
-    reportListLoop: for (reportList) |report| {
-        var previous: isize = -1;
-        var isIncreasing: ?bool = null;
-
-        // Make sure we had enough numbers to determine a pattern
-        if (report.len < 2) {
-            continue;
+    for (reportList) |report| {
+        if (try is_report_safe(report, allocator)) {
+            safeReportCount += 1;
         }
-
-        for (report) |value| {
-            if (previous == -1) {
-                previous = value;
-                continue;
-            }
-
-            std.debug.print(" ({d} {d}) ", .{ previous, value });
-
-            if (previous == value) {
-                continue :reportListLoop;
-            }
-
-            const diff: usize = @abs(previous - value);
-            std.debug.print(" = {d}\n ", .{diff});
-            if (diff > 3) {
-                continue :reportListLoop;
-            }
-
-            // Check increasing/decreasing pattern
-            if (isIncreasing == null) {
-                isIncreasing = value > previous;
-            } else if (isIncreasing.? and value < previous) {
-                continue :reportListLoop;
-            } else if (!isIncreasing.? and value > previous) {
-                continue :reportListLoop;
-            }
-
-            previous = value;
-        }
-
-        safeReportCount += 1;
     }
 
     // stdout is for the actual output of your application, for example if you
